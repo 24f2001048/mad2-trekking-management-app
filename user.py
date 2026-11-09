@@ -1,8 +1,12 @@
 from datetime import date, datetime
-from flask import Blueprint, request, jsonify
+from flask import Blueprint, request, jsonify, send_from_directory
 from flask_jwt_extended import get_jwt_identity
+from celery.result import AsyncResult
 from models import db, User, Trek, Booking
 from utils import role_required, trek_to_dict
+from extensions import cache
+from celery_app import celery
+from tasks import export_booking_history, EXPORT_DIR
 
 user_bp = Blueprint("user", __name__, url_prefix="/api/user")
 
@@ -11,35 +15,41 @@ def current_user_id():
     return int(get_jwt_identity())
 
 
-# ---------- Browse and filter ----------
+def get_open_treks():
+    """The unfiltered list of Approved/Open treks, kept in Redis for 60 seconds."""
+    data = cache.get("open_treks")
+    if data is None:                                   # cache miss: read from the database
+        treks = Trek.query.filter(Trek.status.in_(["Approved", "Open"])) \
+                          .order_by(Trek.id.desc()).all()
+        data = [trek_to_dict(t) for t in treks]
+        cache.set("open_treks", data, timeout=60)
+    return data
+
+
 @user_bp.route("/treks")
 @role_required("user")
 def browse_treks():
-    q = request.args.get("q", "").strip()
-    location = request.args.get("location", "").strip()
+    q = request.args.get("q", "").strip().lower()
+    location = request.args.get("location", "").strip().lower()
     difficulty = request.args.get("difficulty", "").strip()
     max_days = request.args.get("max_days", "").strip()
-
-    # users only see approved or open treks
-    query = Trek.query.filter(Trek.status.in_(["Approved", "Open"]))
-    if q:
-        query = query.filter(Trek.name.ilike(f"%{q}%"))
-    if location:
-        query = query.filter(Trek.location.ilike(f"%{location}%"))
-    if difficulty:
-        query = query.filter(Trek.difficulty == difficulty)
-    if max_days.isdigit():
-        query = query.filter(Trek.duration <= int(max_days))
 
     my_active = {b.trek_id for b in
                  Booking.query.filter_by(user_id=current_user_id(), status="Booked")}
     result = []
-    for t in query.order_by(Trek.id.desc()).all():
-        data = trek_to_dict(t)
-        data["already_booked"] = t.id in my_active
-        result.append(data)
+    for t in get_open_treks():
+        if q and q not in t["name"].lower():
+            continue
+        if location and location not in t["location"].lower():
+            continue
+        if difficulty and t["difficulty"] != difficulty:
+            continue
+        if max_days.isdigit() and t["duration"] > int(max_days):
+            continue
+        item = dict(t)                                  # copy, then add the per-user flag
+        item["already_booked"] = t["id"] in my_active
+        result.append(item)
     return jsonify(result)
-
 
 # ---------- Book ----------
 @user_bp.route("/treks/<int:trek_id>/book", methods=["POST"])
@@ -127,3 +137,29 @@ def update_profile():
     user.phone = (data.get("phone") or "").strip()
     db.session.commit()
     return jsonify(user.to_dict())
+
+# ---------- CSV export (runs in the background with Celery) ----------
+@user_bp.route("/export", methods=["POST"])
+@role_required("user")
+def start_export():
+    task = export_booking_history.delay(current_user_id())     # returns immediately
+    return jsonify({"task_id": task.id}), 202
+
+
+@user_bp.route("/export/<task_id>")
+@role_required("user")
+def export_status(task_id):
+    result = AsyncResult(task_id, app=celery)
+    if result.state == "SUCCESS":
+        return jsonify({"state": "done", "file": result.result})
+    if result.state == "FAILURE":
+        return jsonify({"state": "failed"})
+    return jsonify({"state": "pending"})
+
+
+@user_bp.route("/export/download/<filename>")
+@role_required("user")
+def download_export(filename):
+    if not filename.startswith(f"bookings_{current_user_id()}_"):
+        return jsonify({"error": "Not your file"}), 403
+    return send_from_directory(EXPORT_DIR, filename, as_attachment=True)

@@ -381,7 +381,7 @@ const UserPanel = {
     return {
       tab: "treks", treks: [], bookings: [], profile: { name: "", email: "", phone: "" },
       filters: { q: "", location: "", difficulty: "", max_days: "" },
-      error: "", msg: "",
+      error: "", msg: "",exportFile: "",
     };
   },
   mounted() { this.loadTab("treks"); },
@@ -422,6 +422,42 @@ const UserPanel = {
         this.profile = await api("/api/user/profile", "PUT", this.profile);
         this.flash("Profile updated");
       } catch (e) { this.flash(e.message, true); }
+    },
+    async exportCsv() {
+      try {
+        const data = await api("/api/user/export", "POST");
+        this.exportFile = "";
+        this.flash("Export started. You will get an alert when it is ready.");
+        this.pollExport(data.task_id);
+      } catch (e) { this.flash(e.message, true); }
+    },
+    pollExport(taskId) {
+      // ask the server every 2 seconds whether the background job has finished
+      const timer = setInterval(async () => {
+        try {
+          const r = await api("/api/user/export/" + taskId);
+          if (r.state === "done") {
+            clearInterval(timer);
+            this.exportFile = r.file;
+            alert("Your booking history export is ready!");
+          } else if (r.state === "failed") {
+            clearInterval(timer);
+            this.flash("Export failed", true);
+          }
+        } catch (e) { clearInterval(timer); this.flash(e.message, true); }
+      }, 2000);
+    },
+    async downloadCsv() {
+      // a normal link cannot send the token header, so we fetch the file and save it ourselves
+      const res = await fetch("/api/user/export/download/" + this.exportFile, {
+        headers: { Authorization: "Bearer " + localStorage.getItem("token") },
+      });
+      const blob = await res.blob();
+      const link = document.createElement("a");
+      link.href = URL.createObjectURL(blob);
+      link.download = this.exportFile;
+      link.click();
+      URL.revokeObjectURL(link.href);
     },
     clearFilters() {
       this.filters = { q: "", location: "", difficulty: "", max_days: "" };
@@ -476,7 +512,12 @@ const UserPanel = {
     </div>
 
     <!-- My bookings and history -->
-    <div v-if="tab==='bookings'" class="table-responsive">
+    <div v-if="tab==='bookings'">
+        <div class="mb-3">
+        <button class="btn btn-outline-primary btn-sm me-2" @click="exportCsv">Export CSV</button>
+        <button v-if="exportFile" class="btn btn-success btn-sm" @click="downloadCsv">Download CSV</button>
+      </div>
+      <div class="table-responsive">
       <table class="table table-sm bg-white align-middle">
         <thead><tr><th>Trek</th><th>Location</th><th>Dates</th><th>Booked on</th><th>Booking</th><th>Trek status</th><th></th></tr></thead>
         <tbody>
@@ -490,6 +531,7 @@ const UserPanel = {
           <tr v-if="!bookings.length"><td colspan="7" class="text-muted">No bookings yet.</td></tr>
         </tbody>
       </table>
+    </div>
     </div>
 
     <!-- Profile -->

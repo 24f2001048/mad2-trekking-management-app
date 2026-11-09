@@ -4,3 +4,4 @@ flask-jwt-extended
 flask-caching
 redis
 celery
+packaging
