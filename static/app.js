@@ -11,6 +11,11 @@ async function api(url, method = "GET", body = null) {
     headers,
     body: body ? JSON.stringify(body) : null,
   });
+  if (res.status === 401 && token) {
+    localStorage.clear();
+    location.reload();
+    return;
+  }
   const data = await res.json();
   if (!res.ok)
     throw new Error(data.error || data.msg || "Something went wrong");

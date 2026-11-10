@@ -1,3 +1,4 @@
+from datetime import timedelta
 from flask import Flask, render_template, request
 from flask_jwt_extended import JWTManager
 from models import db, User
@@ -21,6 +22,7 @@ def create_app():
     app = Flask(__name__)
     app.config["SQLALCHEMY_DATABASE_URI"] = "sqlite:///trek.db"
     app.config["JWT_SECRET_KEY"] = "trek-app-super-secret-key-for-jwt-signing-2026"
+    app.config["JWT_ACCESS_TOKEN_EXPIRES"] = timedelta(hours=12)
     app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
     # Redis cache settings
     app.config["CACHE_TYPE"] = "RedisCache"
