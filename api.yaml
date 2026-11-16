@@ -1,0 +1,550 @@
+openapi: 3.0.3
+info:
+  title: Trekking Management Application API
+  version: "1.0"
+  description: >
+    REST API for the MAD-2 Trekking Management Application (Flask).
+    Three roles: admin, staff and user (trekker). All endpoints except
+    /api/register and /api/login need a JWT in the header
+    "Authorization: Bearer <token>".
+servers:
+  - url: http://127.0.0.1:5000
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+  schemas:
+    Error:
+      type: object
+      properties:
+        error: { type: string }
+    Message:
+      type: object
+      properties:
+        message: { type: string }
+    User:
+      type: object
+      properties:
+        id: { type: integer }
+        name: { type: string }
+        email: { type: string }
+        role: { type: string, enum: [admin, staff, user] }
+        phone: { type: string }
+        is_active: { type: boolean }
+        is_blacklisted: { type: boolean }
+    TrekInput:
+      type: object
+      required: [name, location, difficulty, duration, total_slots]
+      properties:
+        name: { type: string }
+        location: { type: string }
+        difficulty: { type: string, enum: [Easy, Moderate, Hard] }
+        duration: { type: integer, minimum: 1, description: "Days. End date is calculated as start_date + duration - 1" }
+        total_slots: { type: integer, minimum: 1 }
+        status: { type: string, enum: [Pending, Approved, Open, Closed, Completed] }
+        start_date: { type: string, format: date }
+        instructions: { type: string }
+    Trek:
+      type: object
+      properties:
+        id: { type: integer }
+        name: { type: string }
+        location: { type: string }
+        difficulty: { type: string }
+        duration: { type: integer }
+        total_slots: { type: integer }
+        available_slots: { type: integer }
+        booked_count: { type: integer }
+        status: { type: string }
+        start_date: { type: string, format: date }
+        end_date: { type: string, format: date }
+        instructions: { type: string }
+        is_started: { type: boolean }
+        staff_id: { type: integer, nullable: true }
+        staff_name: { type: string, nullable: true }
+    UserBooking:
+      type: object
+      properties:
+        id: { type: integer }
+        trek_id: { type: integer }
+        trek_name: { type: string }
+        location: { type: string }
+        start_date: { type: string, format: date }
+        end_date: { type: string, format: date }
+        booking_date: { type: string }
+        booking_status: { type: string, enum: [Booked, Cancelled, Completed] }
+        trek_status: { type: string }
+        trek_started: { type: boolean }
+  responses:
+    BadRequest:
+      description: Validation error
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    Forbidden:
+      description: Not allowed for this role, or account disabled
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    NotFound:
+      description: Resource not found
+
+security:
+  - bearerAuth: []
+
+paths:
+  /api/register:
+    post:
+      tags: [Auth]
+      summary: Register a new trekker
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, email, password]
+              properties:
+                name: { type: string }
+                email: { type: string }
+                password: { type: string, minLength: 6 }
+                phone: { type: string }
+      responses:
+        "201": { description: Registered }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "409": { description: Email already registered }
+
+  /api/login:
+    post:
+      tags: [Auth]
+      summary: Log in (admin, staff or trekker) and receive a JWT
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, password]
+              properties:
+                email: { type: string }
+                password: { type: string }
+      responses:
+        "200":
+          description: Token and user details
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  token: { type: string }
+                  user: { $ref: "#/components/schemas/User" }
+        "401": { description: Invalid email or password }
+        "403": { description: Account deactivated or blacklisted }
+
+  /api/admin/stats:
+    get:
+      tags: [Admin]
+      summary: Dashboard counts (treks, users, staff, bookings)
+      responses:
+        "200":
+          description: Counts
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  treks: { type: integer }
+                  users: { type: integer }
+                  staff: { type: integer }
+                  bookings: { type: integer }
+
+  /api/admin/treks:
+    get:
+      tags: [Admin]
+      summary: List or search treks
+      parameters:
+        - { name: q, in: query, schema: { type: string }, description: "Search by name or location" }
+      responses:
+        "200":
+          description: List of treks
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/Trek" }
+    post:
+      tags: [Admin]
+      summary: Create a trek
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/TrekInput" }
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Trek" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+
+  /api/admin/treks/{trek_id}:
+    parameters:
+      - { name: trek_id, in: path, required: true, schema: { type: integer } }
+    put:
+      tags: [Admin]
+      summary: Update a trek (slots stay consistent with existing bookings)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/TrekInput" }
+      responses:
+        "200":
+          description: Updated
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Trek" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    delete:
+      tags: [Admin]
+      summary: Delete a trek that has no bookings
+      responses:
+        "200": { description: Deleted }
+        "400": { description: Trek has bookings }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/admin/treks/{trek_id}/assign:
+    put:
+      tags: [Admin]
+      summary: Assign a staff member to a trek (empty staff_id unassigns)
+      parameters:
+        - { name: trek_id, in: path, required: true, schema: { type: integer } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                staff_id: { type: integer, nullable: true }
+      responses:
+        "200":
+          description: Updated trek
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Trek" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+
+  /api/admin/staff:
+    post:
+      tags: [Admin]
+      summary: Add a new trek staff member
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, email, password]
+              properties:
+                name: { type: string }
+                email: { type: string }
+                password: { type: string, minLength: 6 }
+                phone: { type: string }
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/User" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "409": { description: Email already registered }
+
+  /api/admin/users:
+    get:
+      tags: [Admin]
+      summary: List or search trekkers or staff
+      parameters:
+        - { name: role, in: query, schema: { type: string, enum: [user, staff], default: user } }
+        - { name: q, in: query, schema: { type: string }, description: "Search by name or email" }
+      responses:
+        "200":
+          description: List of users
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/User" }
+
+  /api/admin/users/{user_id}/status:
+    put:
+      tags: [Admin]
+      summary: Blacklist or deactivate (or restore) a user or staff member
+      parameters:
+        - { name: user_id, in: path, required: true, schema: { type: integer } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [field, value]
+              properties:
+                field: { type: string, enum: [is_blacklisted, is_active_user] }
+                value: { type: boolean }
+      responses:
+        "200":
+          description: Updated user
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/User" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+
+  /api/admin/bookings:
+    get:
+      tags: [Admin]
+      summary: List or search all bookings
+      parameters:
+        - { name: q, in: query, schema: { type: string }, description: "Search by user or trek name" }
+      responses:
+        "200":
+          description: All bookings with history
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    id: { type: integer }
+                    user_name: { type: string }
+                    trek_name: { type: string }
+                    booking_date: { type: string }
+                    status: { type: string }
+
+  /api/staff/treks:
+    get:
+      tags: [Staff]
+      summary: Treks assigned to the logged-in staff member
+      responses:
+        "200":
+          description: Assigned treks
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/Trek" }
+
+  /api/staff/treks/{trek_id}:
+    put:
+      tags: [Staff]
+      summary: Update total slots and status (Open or Closed) of an assigned trek
+      parameters:
+        - { name: trek_id, in: path, required: true, schema: { type: integer } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [total_slots, status]
+              properties:
+                total_slots: { type: integer, minimum: 1 }
+                status: { type: string, enum: [Open, Closed] }
+      responses:
+        "200":
+          description: Updated trek
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Trek" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "403": { description: Trek not assigned to this staff member }
+
+  /api/staff/treks/{trek_id}/participants:
+    get:
+      tags: [Staff]
+      summary: Participants registered for an assigned trek
+      parameters:
+        - { name: trek_id, in: path, required: true, schema: { type: integer } }
+      responses:
+        "200":
+          description: Participant list
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    booking_id: { type: integer }
+                    name: { type: string }
+                    email: { type: string }
+                    phone: { type: string }
+                    status: { type: string }
+        "403": { description: Trek not assigned to this staff member }
+
+  /api/staff/treks/{trek_id}/start:
+    put:
+      tags: [Staff]
+      summary: Mark an assigned trek as started (status becomes Closed)
+      parameters:
+        - { name: trek_id, in: path, required: true, schema: { type: integer } }
+      responses:
+        "200":
+          description: Updated trek
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Trek" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "403": { description: Trek not assigned to this staff member }
+
+  /api/staff/treks/{trek_id}/complete:
+    put:
+      tags: [Staff]
+      summary: Mark a started trek as completed (active bookings become Completed)
+      parameters:
+        - { name: trek_id, in: path, required: true, schema: { type: integer } }
+      responses:
+        "200":
+          description: Updated trek
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Trek" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "403": { description: Trek not assigned to this staff member }
+
+  /api/user/treks:
+    get:
+      tags: [Trekker]
+      summary: Browse Approved and Open treks (served from the Redis cache, 60 s expiry)
+      parameters:
+        - { name: q, in: query, schema: { type: string }, description: "Trek name" }
+        - { name: location, in: query, schema: { type: string } }
+        - { name: difficulty, in: query, schema: { type: string, enum: [Easy, Moderate, Hard] } }
+        - { name: max_days, in: query, schema: { type: integer }, description: "Maximum duration in days" }
+      responses:
+        "200":
+          description: Matching treks, each with an already_booked flag
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/Trek" }
+
+  /api/user/treks/{trek_id}/book:
+    post:
+      tags: [Trekker]
+      summary: Book a trek (only if Open, slots available and not already booked)
+      parameters:
+        - { name: trek_id, in: path, required: true, schema: { type: integer } }
+      responses:
+        "201": { description: Booked }
+        "400": { description: Trek not open or no slots available }
+        "409": { description: Already booked }
+
+  /api/user/bookings/{booking_id}/cancel:
+    put:
+      tags: [Trekker]
+      summary: Cancel an active booking before the trek starts (slot is returned)
+      parameters:
+        - { name: booking_id, in: path, required: true, schema: { type: integer } }
+      responses:
+        "200": { description: Cancelled }
+        "400": { description: Booking not active or trek already started }
+        "403": { description: Not your booking }
+
+  /api/user/bookings:
+    get:
+      tags: [Trekker]
+      summary: Booking and trekking history of the logged-in trekker
+      responses:
+        "200":
+          description: All bookings of the user
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/UserBooking" }
+
+  /api/user/profile:
+    get:
+      tags: [Trekker]
+      summary: Get own profile
+      responses:
+        "200":
+          description: Profile
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/User" }
+    put:
+      tags: [Trekker]
+      summary: Update own name and phone
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name: { type: string }
+                phone: { type: string }
+      responses:
+        "200":
+          description: Updated profile
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/User" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+
+  /api/user/export:
+    post:
+      tags: [Trekker]
+      summary: Start the background (Celery) job that exports booking history as CSV
+      responses:
+        "202":
+          description: Task started
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  task_id: { type: string }
+
+  /api/user/export/{task_id}:
+    get:
+      tags: [Trekker]
+      summary: Check the status of the export job
+      parameters:
+        - { name: task_id, in: path, required: true, schema: { type: string } }
+      responses:
+        "200":
+          description: pending, done (with file name) or failed
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  state: { type: string, enum: [pending, done, failed] }
+                  file: { type: string }
+
+  /api/user/export/download/{filename}:
+    get:
+      tags: [Trekker]
+      summary: Download the generated CSV file (own files only)
+      parameters:
+        - { name: filename, in: path, required: true, schema: { type: string } }
+      responses:
+        "200":
+          description: CSV file
+          content:
+            text/csv:
+              schema: { type: string, format: binary }
+        "403": { description: Not your file }
